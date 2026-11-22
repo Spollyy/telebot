@@ -17,7 +17,7 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 DUFFEL_URL = "https://api.duffel.com/air/offer_requests"
 CABINS = ("economy", "premium_economy")
 CABIN_LABEL = {"economy": "Economy", "premium_economy": "Premium Economy"}
-MAX_WORKERS = int(os.getenv("SEARCH_CONCURRENCY", "4"))
+MAX_WORKERS = int(os.getenv("SEARCH_CONCURRENCY", "1"))
 
 
 def telegram_send(chat_id, text):
@@ -53,7 +53,6 @@ def search_one(origin, destination, departure_date, cabin):
             }],
             "passengers": [{"type": "adult"}, {"type": "adult"}],
             "cabin_class": cabin,
-            "max_connections": 1,
         }
     }
     last_error = None
@@ -61,12 +60,16 @@ def search_one(origin, destination, departure_date, cabin):
         try:
             response = requests.post(
                 DUFFEL_URL,
-                params={"return_offers": "true", "supplier_timeout": "10000"},
+                params={"supplier_timeout": "10000"},
                 headers=headers,
                 json=payload,
                 timeout=35,
             )
-            if response.status_code == 429 or response.status_code >= 500:
+            if response.status_code == 429:
+                log.warning("Duffel rate limit reached; pausing for 65 seconds")
+                time.sleep(65)
+                continue
+            if response.status_code >= 500:
                 time.sleep(min(2 ** attempt, 12))
                 continue
             response.raise_for_status()
@@ -107,6 +110,9 @@ def actual_segment_cabins(offer):
 
 def offer_matches_cabin(offer, requested_cabin):
     cabins = actual_segment_cabins(offer)
+    # Enforce at most one connection (two segments) on each one-way slice.
+    if any(len((sl.get("segments") or [])) > 2 for sl in (offer.get("slices") or [])):
+        return False
     # Never silently label an itinerary Premium Economy if segment-level
     # cabin data is absent or a segment is sold in another cabin.
     return bool(cabins) and all(c == requested_cabin for c in cabins)
