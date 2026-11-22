@@ -6,34 +6,18 @@ from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from urllib.parse import quote_plus
 
-import psycopg
 import requests
-from psycopg.rows import dict_row
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("flight-search")
 
 DUFFEL_TOKEN = os.getenv("DUFFEL_ACCESS_TOKEN", "").strip()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-DB_URL = os.getenv("DATABASE_URL", "").strip()
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 DUFFEL_URL = "https://api.duffel.com/air/offer_requests"
 CABINS = ("economy", "premium_economy")
 CABIN_LABEL = {"economy": "Economy", "premium_economy": "Premium Economy"}
 MAX_WORKERS = int(os.getenv("SEARCH_CONCURRENCY", "4"))
-
-
-def db():
-    if not DB_URL:
-        raise RuntimeError("DATABASE_URL is not configured")
-    return psycopg.connect(DB_URL, row_factory=dict_row)
-
-
-def active_chats():
-    with db() as conn:
-        rows = conn.execute(
-            "SELECT chat_id FROM telegram_subscribers WHERE is_active = TRUE"
-        ).fetchall()
-    return [row["chat_id"] for row in rows]
 
 
 def telegram_send(chat_id, text):
@@ -236,12 +220,9 @@ def format_pair(out_offer, back_offer, out_date, return_date, out_cabin, back_ca
 
 
 def main():
-    if not DUFFEL_TOKEN or not TELEGRAM_TOKEN or not DB_URL:
-        raise RuntimeError("Set DUFFEL_ACCESS_TOKEN, TELEGRAM_BOT_TOKEN and DATABASE_URL")
-    chats = active_chats()
-    if not chats:
-        log.info("No Telegram subscribers yet; open the bot and send /start")
-        return
+    if not DUFFEL_TOKEN or not TELEGRAM_TOKEN or not CHAT_ID:
+        raise RuntimeError("Set DUFFEL_ACCESS_TOKEN, TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID as GitHub Actions secrets")
+    chats = [int(CHAT_ID)]
 
     jobs = []
     start = date(2027, 10, 1)
