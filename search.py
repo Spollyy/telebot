@@ -89,6 +89,11 @@ def search_oneway(origin, destination, departure_date):
                 detail = detail.replace(SERPAPI_KEY, "[redacted]")
             detail = detail.replace(SERPAPI_URL, "[SerpApi URL]")
             last_error = f"{detail[:300]} (HTTP {status})" if status else detail[:300]
+            # Google Flights can return this when a particular airport/date has no offers.
+            # Treat it as an empty result set so the other Tokyo airport can still be checked.
+            if "hasn't returned any results" in detail.lower():
+                log.info("No Google Flights results for %s-%s on %s", origin, destination, departure_date)
+                return []
             if status == 429 or "quota limit" in detail.lower():
                 break
             time.sleep(min(2 ** attempt, 12))
@@ -218,9 +223,9 @@ def verify_free_quota():
             f"SerpApi account is not on the free plan (monthly price: {monthly_price}); "
             "refusing to make flight searches"
         )
-    if searches_left < 20:
+    if searches_left < 30:
         raise RuntimeError(
-            f"Only {searches_left} free SerpApi searches remain; 20 are needed for a full sweep"
+            f"Only {searches_left} free SerpApi searches remain; 30 are needed for a full sweep"
         )
     log.info("SerpApi free plan verified; %d searches remain", searches_left)
 
@@ -254,15 +259,23 @@ def main():
         outbound_date = date(2027, 10, 12) + timedelta(days=day_offset)
         return_date = outbound_date + timedelta(days=34)
 
-        # Two searches per date: one outbound, one return. HND and NRT are
-        # combined in one departure_id parameter for the return search.
+        # Three searches per date: one outbound, then separate HND and NRT returns.
         outbound_offers = search_oneway("VIE", "OKA", outbound_date)
         request_count += 1
         time.sleep(1.2)
-        return_offers = search_oneway("HND,NRT", "VIE", return_date)
-        request_count += 1
+        return_offers = []
+        seen_returns = set()
+        for tokyo_airport in ("HND", "NRT"):
+            airport_offers = search_oneway(tokyo_airport, "VIE", return_date)
+            request_count += 1
+            for itinerary in airport_offers:
+                key = itinerary_key(itinerary)
+                if key and key not in seen_returns:
+                    seen_returns.add(key)
+                    return_offers.append(itinerary)
+            time.sleep(1.2)
         log.info(
-            "%s: %d outbound and %d return Premium Economy options",
+            "%s: %d outbound and %d return Premium Economy options (HND + NRT)",
             outbound_date, len(outbound_offers), len(return_offers)
         )
 
