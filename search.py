@@ -65,13 +65,29 @@ def search_oneway(origin, destination, departure_date):
                 raise RuntimeError(payload["error"])
             offers = []
             seen = set()
+            raw_itineraries = []
             for group in ("best_flights", "other_flights"):
-                for itinerary in payload.get(group) or []:
-                    key = itinerary_key(itinerary)
-                    if key and key not in seen:
-                        seen.add(key)
-                        if valid_itinerary(itinerary):
-                            offers.append(itinerary)
+                raw_itineraries.extend(payload.get(group) or [])
+            rejected_cabins = []
+            for itinerary in raw_itineraries:
+                key = itinerary_key(itinerary)
+                if key and key not in seen:
+                    seen.add(key)
+                    flights = itinerary.get("flights") or []
+                    cabins = [
+                        (flight.get("travel_class") or "MISSING").strip()
+                        for flight in flights
+                    ]
+                    if valid_itinerary(itinerary):
+                        offers.append(itinerary)
+                    else:
+                        rejected_cabins.append(cabins or ["NO_FLIGHTS"])
+            log.info(
+                "SerpApi %s-%s %s: raw=%d, accepted_premium_economy=%d, "
+                "rejected_cabin_examples=%s",
+                origin, destination, departure_date, len(raw_itineraries),
+                len(offers), rejected_cabins[:5]
+            )
             return offers
         except Exception as exc:
             # Never log the request URL: it contains the private SerpApi key.
