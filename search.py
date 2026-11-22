@@ -126,15 +126,38 @@ def itinerary_key(itinerary):
     )
 
 
+JAPAN_AIRPORTS = {
+    "HND", "NRT", "KIX", "ITM", "NGO", "FUK", "OKA", "CTS", "KOJ",
+    "HIJ", "SDJ", "KMJ", "NGS", "MMY", "ISG", "UKB", "TAK", "MYJ",
+    "KCZ", "AOJ", "AKJ", "HKD", "OIT", "UBJ", "KIJ", "TOY", "IZO",
+    "ASJ", "TSJ", "IKI", "SHI", "KMQ", "AXT", "GAJ", "FKS", "HNA",
+}
+
+
+def is_japan_domestic_segment(flight):
+    dep = (flight.get("departure_airport") or {}).get("id", "").upper()
+    arr = (flight.get("arrival_airport") or {}).get("id", "").upper()
+    return dep in JAPAN_AIRPORTS and arr in JAPAN_AIRPORTS
+
+
 def valid_itinerary(itinerary):
     flights = itinerary.get("flights") or []
     if not flights or len(flights) > 2:
         return False
-    # Fail closed: never report Economy or an unknown cabin as Premium Economy.
-    return all(
-        (flight.get("travel_class") or "").strip().lower() == "premium economy"
-        for flight in flights
-    )
+
+    # Require Premium Economy on every international segment.
+    # Economy is permitted only on a domestic Japan segment, where Premium
+    # Economy is generally not offered. Unknown cabin data fails closed.
+    has_premium_economy = False
+    for flight in flights:
+        cabin = (flight.get("travel_class") or "").strip().lower()
+        if cabin == "premium economy":
+            has_premium_economy = True
+        elif cabin == "economy" and is_japan_domestic_segment(flight):
+            continue
+        else:
+            return False
+    return has_premium_economy
 
 
 def itinerary_price(itinerary):
@@ -200,7 +223,7 @@ def format_pair(outbound, inbound, out_date, return_date):
         "🇯🇵 НАЙДЕН ВАРИАНТ — Very Khitry Nihon",
         f"Цена на 2 взрослых: {total:.2f} {CURRENCY}",
         f"Даты: {out_date} → {return_date} (34 ночи)",
-        f"Класс: {CABIN_LABEL} туда и обратно",
+        f"Класс: Premium Economy на международных сегментах; Economy допускается на внутренних рейсах по Японии",
         f"Маршрут: VIE → OKA / {back_origin} → VIE",
         "",
         "ТУДА:",
