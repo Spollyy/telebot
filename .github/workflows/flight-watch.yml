@@ -1,6 +1,8 @@
 name: Very Khitry Nihon Flight Watch
 
 on:
+  schedule:
+    - cron: "0 8 * * *"
   workflow_dispatch:
 
 permissions:
@@ -21,11 +23,25 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Get UTC date
+        id: today
+        run: echo "day=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+      - name: Prevent more than one quota-consuming run per UTC day
+        id: daily_guard
+        uses: actions/cache@v4
+        with:
+          path: .flightwatch-daily-marker
+          key: flight-watch-${{ steps.today.outputs.day }}
       - name: Install dependencies
+        if: steps.daily_guard.outputs.cache-hit != 'true'
         run: pip install -r requirements.txt
       - name: Search Premium Economy flights and send Telegram alerts
+        if: steps.daily_guard.outputs.cache-hit != 'true'
         env:
           SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python search.py
+      - name: Mark today's sweep complete
+        if: success() && steps.daily_guard.outputs.cache-hit != 'true'
+        run: echo "completed $(date -u +%FT%TZ)" > .flightwatch-daily-marker
