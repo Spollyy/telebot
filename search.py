@@ -185,6 +185,32 @@ def format_pair(outbound, inbound, out_date, return_date):
     return "\n".join(lines)[:3900]
 
 
+def verify_free_quota():
+    # Account API calls are free and do not consume the monthly search quota.
+    response = requests.get(
+        "https://serpapi.com/account.json",
+        params={"api_key": SERPAPI_KEY},
+        timeout=25,
+    )
+    response.raise_for_status()
+    account = response.json()
+    try:
+        monthly_price = Decimal(str(account["plan_monthly_price"]))
+        searches_left = int(account["plan_searches_left"])
+    except (KeyError, InvalidOperation, TypeError, ValueError) as exc:
+        raise RuntimeError("Could not verify SerpApi plan and remaining quota; refusing to search") from exc
+    if monthly_price != 0:
+        raise RuntimeError(
+            f"SerpApi account is not on the free plan (monthly price: {monthly_price}); "
+            "refusing to make flight searches"
+        )
+    if searches_left < 20:
+        raise RuntimeError(
+            f"Only {searches_left} free SerpApi searches remain; 20 are needed for a full sweep"
+        )
+    log.info("SerpApi free plan verified; %d searches remain", searches_left)
+
+
 def main():
     missing = [
         name for name, value in (
@@ -195,6 +221,9 @@ def main():
     ]
     if missing:
         raise RuntimeError("Missing GitHub Actions secrets: " + ", ".join(missing))
+
+    # Refuse to run if the SerpApi account is not free or has insufficient quota.
+    verify_free_quota()
 
     # Exactly ten outbound dates: 12–21 October 2027 inclusive.
     sent = 0
