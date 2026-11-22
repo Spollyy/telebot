@@ -18,7 +18,7 @@ Each daily full sweep makes 20 SerpApi searches:
 - 10 outbound searches (VIE → OKA)
 - 10 return searches (HND or NRT → VIE; both Tokyo airports are combined in one query)
 
-For 10 daily sweeps, that is 200 searches. SerpApi currently advertises 250 searches/month on its free plan, leaving an estimated 50-search buffer. Quotas and plan terms can change; check your account dashboard before starting. This project does not intentionally make extra booking-detail requests.
+For 10 daily sweeps, that is 200 searches. SerpApi currently advertises 250 searches/month on its free plan, leaving an estimated 50-search buffer if the quota is otherwise unused. The script checks the account before each run and refuses to search unless the account is on the $0 plan and at least 20 searches remain. The account check itself is free and does not consume the search quota. Quotas and plan terms can change. This project does not make extra booking-detail requests.
 
 ## GitHub Actions setup
 
