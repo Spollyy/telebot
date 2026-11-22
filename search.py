@@ -75,9 +75,21 @@ def search_oneway(origin, destination, departure_date):
             return offers
         except Exception as exc:
             # Never log the request URL: it contains the private SerpApi key.
-            status = getattr(getattr(exc, "response", None), "status_code", None)
-            last_error = f"{type(exc).__name__} (HTTP {status})" if status else type(exc).__name__
-            if status == 429 or "quota limit" in str(exc).lower():
+            error_response = getattr(exc, "response", None)
+            status = getattr(error_response, "status_code", None)
+            detail = None
+            if error_response is not None:
+                try:
+                    error_body = error_response.json()
+                    detail = error_body.get("error") or error_body.get("message")
+                except (ValueError, AttributeError):
+                    detail = None
+            detail = detail or str(exc)
+            if SERPAPI_KEY:
+                detail = detail.replace(SERPAPI_KEY, "[redacted]")
+            detail = detail.replace(SERPAPI_URL, "[SerpApi URL]")
+            last_error = f"{detail[:300]} (HTTP {status})" if status else detail[:300]
+            if status == 429 or "quota limit" in detail.lower():
                 break
             time.sleep(min(2 ** attempt, 12))
     raise RuntimeError(
