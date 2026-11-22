@@ -1,7 +1,7 @@
 import logging
 import os
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from urllib.parse import quote_plus
 
@@ -74,8 +74,10 @@ def search_oneway(origin, destination, departure_date):
                             offers.append(itinerary)
             return offers
         except Exception as exc:
-            last_error = exc
-            if "quota limit" in str(exc).lower() or "429" in str(exc):
+            # Never log the request URL: it contains the private SerpApi key.
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            last_error = f"{type(exc).__name__} (HTTP {status})" if status else type(exc).__name__
+            if status == 429 or "quota limit" in str(exc).lower():
                 break
             time.sleep(min(2 ** attempt, 12))
     raise RuntimeError(
@@ -212,6 +214,14 @@ def verify_free_quota():
 
 
 def main():
+    today = datetime.now(timezone.utc).date()
+    monitor_start = date(2026, 11, 22)
+    monitor_end = date(2026, 12, 1)
+    if not monitor_start <= today <= monitor_end:
+        log.info("Monitoring window is %s through %s UTC; today is %s. No searches performed.",
+                 monitor_start, monitor_end, today)
+        return
+
     missing = [
         name for name, value in (
             ("SERPAPI_API_KEY", SERPAPI_KEY),
