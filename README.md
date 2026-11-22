@@ -29,11 +29,12 @@ Scheduled runs happen once per day at 08:00 UTC. GitHub-hosted standard runners 
 
 GitHub Actions hosting is free for this public repository. Live flight-search data is a separate matter:
 Duffel's pricing currently includes a 1,500:1 search-to-book ratio and charges $0.005 per excess search.
-This watcher currently performs up to 132 one-way offer searches per sweep (22 dates, two cabins,
-and Tokyo's two airports), or 2,772 searches over 21 days if every run completes.
-If there are no bookings against the account, the searches may become chargeable. Review Duffel's
-current pricing before enabling scheduled live searches. A Duffel test token returns sandbox data,
-not realistic live fares.
+This watcher currently performs up to 132 one-way offer searches per daily sweep (22 dates, two cabins,
+and Tokyo's two airports), or 2,772 searches over 21 days. At $0.005 per excess search, a simple
+upper estimate is $13.86 if every search is chargeable and there are no offsetting bookings.
+Actual billing depends on Duffel's account terms. The daily schedule does not expire automatically:
+disable the workflow in the Actions tab after the 21-day monitoring period. A Duffel test token
+returns sandbox data, not realistic live fares.
 
 ## Security
 
