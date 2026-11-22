@@ -10,7 +10,7 @@ A personal Telegram flight watcher running on GitHub Actions (no paid server or 
 - At most 1 connection on each direction
 - Four cabin combinations: Economy/Economy, Economy/Premium Economy,
   Premium Economy/Economy, Premium Economy/Premium Economy
-- Scheduled once per day at 08:00 UTC; can also be started manually
+- Scheduled every other calendar day at 08:00 UTC; can also be started manually
 - Sends all matching combinations without a price threshold
 
 ## GitHub Actions setup
@@ -23,7 +23,7 @@ Add these three secrets:
 - `DUFFEL_ACCESS_TOKEN`: a Duffel **live** access token, not a test token
 
 Then open **Actions → Very Khitry Nihon Flight Watch → Run workflow** to test it.
-Scheduled runs happen once per day at 08:00 UTC. GitHub-hosted standard runners are free for public repositories.
+Scheduled runs happen every other calendar day at 08:00 UTC. GitHub-hosted standard runners are free for public repositories.
 
 ## Important API cost note
 
@@ -31,7 +31,7 @@ GitHub Actions hosting is free for this public repository. Live flight-search da
 Duffel's pricing currently includes a 1,500:1 search-to-book ratio and charges $0.005 per excess search.
 This watcher currently performs up to 132 one-way offer searches per daily sweep (22 dates, two cabins,
 and Tokyo's two airports), or 2,772 searches over 21 days. At $0.005 per excess search, a simple
-upper estimate is $13.86 if every search is chargeable and there are no offsetting bookings.
+upper estimate is approximately $7.26 if every search is chargeable and there are no offsetting bookings.
 Actual billing depends on Duffel's account terms. The daily schedule does not expire automatically:
 disable the workflow in the Actions tab after the 21-day monitoring period. A Duffel test token
 returns sandbox data, not realistic live fares.
