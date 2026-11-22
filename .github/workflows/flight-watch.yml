@@ -6,11 +6,26 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: flight-watch
+  cancel-in-progress: false
+
 jobs:
-  status:
+  search:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - name: Explain paused flight search
-        run: |
-          echo "Flight search is paused while a compliant, genuinely free data source is selected."
-          echo "No Duffel requests or Google Flights scraping are performed."
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Search Premium Economy flights and send Telegram alerts
+        env:
+          SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python search.py
