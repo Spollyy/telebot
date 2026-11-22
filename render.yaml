@@ -2,7 +2,7 @@ databases:
   - name: nihon-flight-db
     databaseName: nihon_flight_watch
     user: nihon_bot
-    plan: free
+    plan: basic-256mb
     region: frankfurt
 
 services:
