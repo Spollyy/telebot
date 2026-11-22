@@ -1,4 +1,3 @@
-import concurrent.futures
 import logging
 import os
 import time
@@ -11,287 +10,224 @@ import requests
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("flight-search")
 
-DUFFEL_TOKEN = os.getenv("DUFFEL_ACCESS_TOKEN", "").strip()
+SERPAPI_KEY = os.getenv("SERPAPI_API_KEY", "").strip()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-DUFFEL_URL = "https://api.duffel.com/air/offer_requests"
-CABINS = ("economy", "premium_economy")
-CABIN_LABEL = {"economy": "Economy", "premium_economy": "Premium Economy"}
-MAX_WORKERS = int(os.getenv("SEARCH_CONCURRENCY", "1"))
+SERPAPI_URL = "https://serpapi.com/search.json"
+CURRENCY = "EUR"
+TRAVEL_CLASS = "2"  # SerpApi: 2 = Premium economy
+CABIN_LABEL = "Premium Economy"
+ADULTS = 2
+MAX_STOPS = "2"  # SerpApi: 2 = nonstop or at most one connection
 
 
-def telegram_send(chat_id, text):
+def telegram_send(text):
     response = requests.post(
         f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-        json={
-            "chat_id": chat_id,
-            "text": text,
-            "disable_web_page_preview": True,
-        },
+        json={"chat_id": int(CHAT_ID), "text": text, "disable_web_page_preview": True},
         timeout=25,
     )
     response.raise_for_status()
     data = response.json()
     if not data.get("ok"):
         raise RuntimeError(f"Telegram sendMessage failed: {data}")
-    time.sleep(0.9)  # stay below Telegram's per-chat message rate
+    time.sleep(1.0)
 
 
-def search_one(origin, destination, departure_date, cabin):
-    headers = {
-        "Authorization": f"Bearer {DUFFEL_TOKEN}",
-        "Duffel-Version": "v2",
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "data": {
-            "slices": [{
-                "origin": origin,
-                "destination": destination,
-                "departure_date": departure_date.isoformat(),
-            }],
-            "passengers": [{"type": "adult"}, {"type": "adult"}],
-            "cabin_class": cabin,
-        }
+def search_oneway(origin, destination, departure_date):
+    params = {
+        "engine": "google_flights",
+        "api_key": SERPAPI_KEY,
+        "type": "2",
+        "departure_id": origin,
+        "arrival_id": destination,
+        "outbound_date": departure_date.isoformat(),
+        "travel_class": TRAVEL_CLASS,
+        "adults": ADULTS,
+        "stops": MAX_STOPS,
+        "currency": CURRENCY,
+        "gl": "at",
+        "hl": "en",
+        "show_hidden": "true",
     }
     last_error = None
     for attempt in range(4):
         try:
-            response = requests.post(
-                DUFFEL_URL,
-                params={"supplier_timeout": "10000"},
-                headers=headers,
-                json=payload,
-                timeout=35,
-            )
+            response = requests.get(SERPAPI_URL, params=params, timeout=60)
             if response.status_code == 429:
-                log.warning("Duffel rate limit reached; pausing for 65 seconds")
-                time.sleep(65)
-                continue
+                raise RuntimeError("SerpApi rate/quota limit reached (HTTP 429)")
             if response.status_code >= 500:
                 time.sleep(min(2 ** attempt, 12))
                 continue
             response.raise_for_status()
-            data = response.json().get("data", {})
-            return {
-                "origin": origin,
-                "destination": destination,
-                "date": departure_date.isoformat(),
-                "cabin": cabin,
-                "offers": data.get("offers") or [],
-            }
+            payload = response.json()
+            if payload.get("error"):
+                raise RuntimeError(payload["error"])
+            offers = []
+            seen = set()
+            for group in ("best_flights", "other_flights"):
+                for itinerary in payload.get(group) or []:
+                    key = itinerary_key(itinerary)
+                    if key and key not in seen:
+                        seen.add(key)
+                        if valid_itinerary(itinerary):
+                            offers.append(itinerary)
+            return offers
         except Exception as exc:
             last_error = exc
+            if "quota limit" in str(exc).lower() or "429" in str(exc):
+                break
             time.sleep(min(2 ** attempt, 12))
-    log.warning("Duffel search failed %s-%s %s %s: %s",
-                origin, destination, departure_date, cabin, last_error)
-    return {
-        "origin": origin, "destination": destination,
-        "date": departure_date.isoformat(), "cabin": cabin, "offers": [],
-    }
+    raise RuntimeError(
+        f"SerpApi search failed for {origin}-{destination} {departure_date}: {last_error}"
+    )
 
 
-def actual_segment_cabins(offer):
-    found = []
-    for slice_data in offer.get("slices") or []:
-        for segment in slice_data.get("segments") or []:
-            passenger_rows = segment.get("passengers") or []
-            cabin = None
-            if passenger_rows:
-                cabin = passenger_rows[0].get("cabin_class")
-            if not cabin:
-                # Duffel's offer-level passenger cabin is a safe fallback only
-                # when the segment itself does not expose a passenger cabin.
-                cabin = None
-            found.append(cabin)
-    return found
+def itinerary_key(itinerary):
+    flights = itinerary.get("flights") or []
+    return "|".join(
+        f"{f.get('flight_number','')}:{(f.get('departure_airport') or {}).get('time','')}"
+        for f in flights
+    )
 
 
-def offer_matches_cabin(offer, requested_cabin):
-    cabins = actual_segment_cabins(offer)
-    # Enforce at most one connection (two segments) on each one-way slice.
-    if any(len((sl.get("segments") or [])) > 2 for sl in (offer.get("slices") or [])):
+def valid_itinerary(itinerary):
+    flights = itinerary.get("flights") or []
+    if not flights or len(flights) > 2:
         return False
-    # Never silently label an itinerary Premium Economy if segment-level
-    # cabin data is absent or a segment is sold in another cabin.
-    return bool(cabins) and all(c == requested_cabin for c in cabins)
+    # Fail closed: never report Economy or an unknown cabin as Premium Economy.
+    return all(
+        (flight.get("travel_class") or "").strip().lower() == "premium economy"
+        for flight in flights
+    )
 
 
-def amount(offer):
+def itinerary_price(itinerary):
     try:
-        return Decimal(str(offer["total_amount"])), offer["total_currency"]
-    except (KeyError, InvalidOperation):
-        return None, None
+        return Decimal(str(itinerary["price"]))
+    except (KeyError, InvalidOperation, TypeError):
+        return None
 
 
-def airport(place):
-    if not isinstance(place, dict):
-        return "?"
-    return place.get("iata_code") or place.get("name") or "?"
+def itinerary_airports(itinerary):
+    flights = itinerary.get("flights") or []
+    first = flights[0] if flights else {}
+    last = flights[-1] if flights else {}
+    origin = (first.get("departure_airport") or {}).get("id", "?")
+    destination = (last.get("arrival_airport") or {}).get("id", "?")
+    return origin, destination
 
 
-def segment_lines(offer):
+def segment_lines(itinerary):
     lines = []
-    for slice_data in offer.get("slices") or []:
-        for segment in slice_data.get("segments") or []:
-            op = segment.get("operating_carrier") or {}
-            marketing = segment.get("marketing_carrier") or {}
-            carrier = op.get("name") or marketing.get("name") or "Авиакомпания не указана"
-            flight_no = segment.get("marketing_carrier_flight_number") or ""
-            origin = airport(segment.get("origin"))
-            dest = airport(segment.get("destination"))
-            dep = (segment.get("departing_at") or "?").replace("T", " ")
-            arr = (segment.get("arriving_at") or "?").replace("T", " ")
-            pax = (segment.get("passengers") or [{}])[0]
-            cabin = pax.get("cabin_class")
-            cabin_name = pax.get("cabin_class_marketing_name") or CABIN_LABEL.get(cabin, "класс не указан")
-            lines.append(
-                f"  • {carrier} {flight_no}: {origin} → {dest}\n"
-                f"    {dep} — {arr}; салон: {cabin_name}"
-            )
+    for flight in itinerary.get("flights") or []:
+        dep = flight.get("departure_airport") or {}
+        arr = flight.get("arrival_airport") or {}
+        lines.append(
+            f"  • {flight.get('airline','Airline unknown')} "
+            f"{flight.get('flight_number','')}: {dep.get('id','?')} → {arr.get('id','?')}\n"
+            f"    {dep.get('time','?')} — {arr.get('time','?')} | "
+            f"{flight.get('travel_class','cabin unknown')}"
+        )
+    for layover in itinerary.get("layovers") or []:
+        lines.append(
+            f"    Пересадка: {layover.get('name', layover.get('id','?'))}; "
+            f"{layover.get('duration','?')} мин."
+        )
     return lines
 
 
-def baggage_summary(offer):
-    bits = []
-    for slice_data in offer.get("slices") or []:
-        for segment in slice_data.get("segments") or []:
-            pax_rows = segment.get("passengers") or []
-            for bag in (pax_rows[0].get("baggages") or []) if pax_rows else []:
-                quantity = bag.get("quantity")
-                typ = bag.get("type") or "багаж"
-                if quantity is not None:
-                    bits.append(f"{typ}: {quantity}")
-    return ", ".join(dict.fromkeys(bits)) if bits else "не указано в ответе API"
+def duration_text(itinerary):
+    minutes = itinerary.get("total_duration")
+    if not isinstance(minutes, (int, float)):
+        return "не указана"
+    hours, mins = divmod(int(minutes), 60)
+    return f"{hours} ч {mins} мин"
 
 
-def duration(offer):
-    values = []
-    for sl in offer.get("slices") or []:
-        if sl.get("duration"):
-            values.append(sl["duration"])
-    return " / ".join(values) if values else "не указана"
-
-
-def offer_key(offer):
-    parts = []
-    for sl in offer.get("slices") or []:
-        for seg in sl.get("segments") or []:
-            carrier = (seg.get("operating_carrier") or {}).get("iata_code", "")
-            number = seg.get("marketing_carrier_flight_number", "")
-            parts.append(f"{carrier}{number}:{seg.get('departing_at','')}")
-    return "|".join(parts)
-
-
-def google_flights_link(out_date, return_date, return_airport):
+def google_flights_link(out_date, return_date):
     query = (
         f"Flights from Vienna to Okinawa on {out_date}; "
-        f"return flights from {return_airport} to Vienna on {return_date}"
+        f"return flights from Tokyo to Vienna on {return_date}; "
+        f"Premium economy, 2 adults"
     )
     return "https://www.google.com/travel/flights?q=" + quote_plus(query)
 
 
-def format_pair(out_offer, back_offer, out_date, return_date, out_cabin, back_cabin, back_airport):
-    out_amount, out_currency = amount(out_offer)
-    back_amount, back_currency = amount(back_offer)
-    if out_amount is None or back_amount is None or out_currency != back_currency:
+def format_pair(outbound, inbound, out_date, return_date):
+    out_price = itinerary_price(outbound)
+    back_price = itinerary_price(inbound)
+    if out_price is None or back_price is None:
         return None
-    total = out_amount + back_amount
+    back_origin, _ = itinerary_airports(inbound)
+    total = out_price + back_price
     lines = [
         "🇯🇵 НАЙДЕН ВАРИАНТ — Very Khitry Nihon",
-        f"Цена на 2 взрослых: {total:.2f} {out_currency}",
+        f"Цена на 2 взрослых: {total:.2f} {CURRENCY}",
         f"Даты: {out_date} → {return_date} (34 ночи)",
-        f"Классы: туда {CABIN_LABEL[out_cabin]} / обратно {CABIN_LABEL[back_cabin]}",
-        f"Маршрут: VIE → OKA / {back_airport} → VIE",
+        f"Класс: {CABIN_LABEL} туда и обратно",
+        f"Маршрут: VIE → OKA / {back_origin} → VIE",
         "",
         "ТУДА:",
-        *segment_lines(out_offer),
-        f"Длительность: {duration(out_offer)}",
-        f"Багаж: {baggage_summary(out_offer)}",
+        *segment_lines(outbound),
+        f"Длительность: {duration_text(outbound)}",
+        "Багаж: Google Flights API не вернул надёжные данные о норме багажа",
         "",
         "ОБРАТНО:",
-        *segment_lines(back_offer),
-        f"Длительность: {duration(back_offer)}",
-        f"Багаж: {baggage_summary(back_offer)}",
+        *segment_lines(inbound),
+        f"Длительность: {duration_text(inbound)}",
+        "Багаж: Google Flights API не вернул надёжные данные о норме багажа",
         "",
-        f"ID предложения туда: {out_offer.get('id','нет')}",
-        f"ID предложения обратно: {back_offer.get('id','нет')}",
-        "Бронирование: это два независимых one-way предложения; могут быть отдельные билеты и PNR.",
-        "Ссылка для дополнительной проверки маршрута (не прямая ссылка на эти тарифы):",
-        google_flights_link(out_date, return_date, back_airport),
+        "Это сочетание двух отдельных поисков в одну сторону; билеты могут оформляться отдельно.",
+        "Проверить маршрут и актуальную цену:",
+        google_flights_link(out_date, return_date),
     ]
-    text = "\n".join(lines)
-    return text[:3900]
+    return "\n".join(lines)[:3900]
 
 
 def main():
-    if not DUFFEL_TOKEN or not TELEGRAM_TOKEN or not CHAT_ID:
-        raise RuntimeError("Set DUFFEL_ACCESS_TOKEN, TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID as GitHub Actions secrets")
-    chats = [int(CHAT_ID)]
+    missing = [
+        name for name, value in (
+            ("SERPAPI_API_KEY", SERPAPI_KEY),
+            ("TELEGRAM_BOT_TOKEN", TELEGRAM_TOKEN),
+            ("TELEGRAM_CHAT_ID", CHAT_ID),
+        ) if not value
+    ]
+    if missing:
+        raise RuntimeError("Missing GitHub Actions secrets: " + ", ".join(missing))
 
-    jobs = []
-    start = date(2027, 10, 1)
-    end = date(2027, 10, 22)
-    day = start
-    while day <= end:
-        back = day + timedelta(days=34)
-        for cabin in CABINS:
-            jobs.append(("VIE", "OKA", day, cabin))
-            for tokyo in ("HND", "NRT"):
-                jobs.append((tokyo, "VIE", back, cabin))
-        day += timedelta(days=1)
-
-    results = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        future_map = {
-            pool.submit(search_one, origin, destination, dep_date, cabin):
-                (origin, destination, dep_date.isoformat(), cabin)
-            for origin, destination, dep_date, cabin in jobs
-        }
-        for future in concurrent.futures.as_completed(future_map):
-            key = future_map[future]
-            try:
-                results[key] = future.result()
-            except Exception:
-                log.exception("Search task failed: %s", key)
-                results[key] = {"offers": []}
-
+    # Exactly ten outbound dates: 12–21 October 2027 inclusive.
     sent = 0
-    for out_date_num in range(1, 23):
-        out_date = date(2027, 10, out_date_num)
-        return_date = out_date + timedelta(days=34)
-        out_offers = {}
-        back_offers = {}
-        for cabin in CABINS:
-            res = results.get(("VIE", "OKA", out_date.isoformat(), cabin), {})
-            out_offers[cabin] = [
-                o for o in res.get("offers", []) if offer_matches_cabin(o, cabin)
-            ]
-            for tokyo in ("HND", "NRT"):
-                res = results.get((tokyo, "VIE", return_date.isoformat(), cabin), {})
-                back_offers[(tokyo, cabin)] = [
-                    o for o in res.get("offers", []) if offer_matches_cabin(o, cabin)
-                ]
+    request_count = 0
+    for day_offset in range(10):
+        outbound_date = date(2027, 10, 12) + timedelta(days=day_offset)
+        return_date = outbound_date + timedelta(days=34)
 
-        for out_cabin in CABINS:
-            for back_cabin in CABINS:
-                for tokyo in ("HND", "NRT"):
-                    for outbound in out_offers[out_cabin]:
-                        for inbound in back_offers[(tokyo, back_cabin)]:
-                            msg = format_pair(
-                                outbound, inbound, out_date.isoformat(),
-                                return_date.isoformat(), out_cabin, back_cabin, tokyo
-                            )
-                            if not msg:
-                                continue
-                            for chat_id in chats:
-                                try:
-                                    telegram_send(chat_id, msg)
-                                    sent += 1
-                                except Exception:
-                                    log.exception("Telegram send failed for chat %s", chat_id)
-    log.info("Search sweep finished. Queries=%s, messages_sent=%s", len(jobs), sent)
+        # Two searches per date: one outbound, one return. HND and NRT are
+        # combined in one departure_id parameter for the return search.
+        outbound_offers = search_oneway("VIE", "OKA", outbound_date)
+        request_count += 1
+        time.sleep(1.2)
+        return_offers = search_oneway("HND,NRT", "VIE", return_date)
+        request_count += 1
+        log.info(
+            "%s: %d outbound and %d return Premium Economy options",
+            outbound_date, len(outbound_offers), len(return_offers)
+        )
+
+        for outbound in outbound_offers:
+            for inbound in return_offers:
+                message = format_pair(
+                    outbound, inbound, outbound_date.isoformat(), return_date.isoformat()
+                )
+                if message:
+                    try:
+                        telegram_send(message)
+                        sent += 1
+                    except Exception:
+                        log.exception("Failed to send Telegram alert")
+
+    log.info("Finished: %d SerpApi searches, %d Telegram messages", request_count, sent)
 
 
 if __name__ == "__main__":
