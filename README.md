@@ -1,47 +1,55 @@
 # Very Khitry Nihon Flight Watch
 
-Personal Telegram flight watcher. The search code uses SerpApi's Google Flights engine and does not use Duffel.
+Personal Telegram flight watcher. Uses SerpApi's Google Flights engine; no Duffel, paid server, or database.
 
-## Search rules
+## Flight search rules
 
 - 2 adults
-- Premium Economy only, outbound and return
-- Outbound: Vienna (VIE) to Okinawa (OKA), 12–21 October 2027 inclusive (exactly 10 dates)
-- Return: Tokyo (HND or NRT) to Vienna (VIE), exactly 34 nights after outbound
+- Premium Economy only on every segment, outbound and return
+- Outbound: Vienna (VIE) to Okinawa (OKA), 12–21 October 2027 inclusive (10 dates)
+- Return: Tokyo Haneda (HND) or Narita (NRT) to Vienna (VIE), exactly 34 nights after departure
 - At most 1 connection per direction
 - All airlines
-- Results sent to one Telegram chat
+
+## Monitoring window
+
+- Start: 22 November 2026 UTC
+- End: 1 December 2026 UTC (10 calendar days inclusive)
+- One sweep per UTC day
+- Scheduled time: 08:00 UTC
+- The script refuses to search outside this window.
+- GitHub Actions cache prevents a second quota-consuming run on the same UTC day after a successful sweep.
+
+The first sweep for today must be started manually from **Actions → Very Khitry Nihon Flight Watch → Run workflow**. The daily schedule will run at 08:00 UTC on the following days.
 
 ## Search volume and free quota
 
-Each daily full sweep makes 20 SerpApi searches:
+Each sweep makes up to 20 SerpApi searches:
 - 10 outbound searches (VIE → OKA)
-- 10 return searches (HND or NRT → VIE; both Tokyo airports are combined in one query)
+- 10 return searches (HND and NRT combined in one query per date)
 
-For 10 daily sweeps, that is 200 searches. SerpApi currently advertises 250 searches/month on its free plan, leaving an estimated 50-search buffer if the quota is otherwise unused. The script checks the account before each run and refuses to search unless the account is on the $0 plan and at least 20 searches remain. The account check itself is free and does not consume the search quota. Quotas and plan terms can change. This project does not make extra booking-detail requests.
+Ten daily sweeps use up to 200 searches. SerpApi's free plan advertises 250 searches per month. Before every sweep, the script calls the free Account API and refuses to search unless the monthly plan price is $0 and at least 20 searches remain. The Account API itself does not consume search quota. If the free quota has been partly used already, the script may stop before searching.
 
 ## GitHub Actions setup
 
 In this public repository, open **Settings → Secrets and variables → Actions → New repository secret**.
-Add these secrets:
+Required secrets:
 
-- `SERPAPI_API_KEY`: your SerpApi key
+- `SERPAPI_API_KEY`: SerpApi API key
 - `TELEGRAM_BOT_TOKEN`: a newly generated Telegram bot token from @BotFather
-- `TELEGRAM_CHAT_ID`: your numeric Telegram chat ID
+- `TELEGRAM_CHAT_ID`: numeric Telegram chat ID
 
-Do not paste secrets into chat or commit them to the public repository.
-
-The workflow is currently **manual-only**. After adding the secrets, run **Actions → Very Khitry Nihon Flight Watch → Run workflow** for a test. Once the monitoring start date is chosen, a daily schedule can be enabled for a 10-day period; disable it after the tenth run. GitHub Actions runs on a public repository do not require a paid always-on server.
+Never paste credentials into chat or commit them to this public repository.
 
 ## Result limitations
 
-SerpApi returns Google Flights itinerary listings, including flight segments, cabin class, prices, airlines and layovers when provided. The script rejects itineraries unless every segment is explicitly labelled Premium economy and there are no more than two flight segments. Baggage allowance may not be present in the search response, so the bot will not guess it.
+The script only accepts results where every segment is explicitly labelled Premium economy and there are no more than two flight segments. If the API does not explicitly identify the cabin, that itinerary is discarded rather than guessed. Baggage allowance may not be included in search results, so the bot will say it is not confirmed.
 
-Outbound and return are searched independently and paired by date. They may be separate tickets and booking references. The message links to a Google Flights search, not a guaranteed direct booking URL.
+Outbound and return are searched independently and paired by date. They may be separate tickets and booking references. Telegram messages include the Google Flights search link, not a guaranteed direct booking URL.
 
 ## Infrastructure
 
-- GitHub Actions: runner only
-- SerpApi: Google Flights results provider
-- Telegram Bot API: alerts
+- GitHub Actions: scheduled runner
+- SerpApi: flight-search data
+- Telegram Bot API: message delivery
 - No Render, database, Duffel, or always-on server
